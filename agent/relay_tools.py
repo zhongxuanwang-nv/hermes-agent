@@ -52,7 +52,10 @@ def execute(
             raise
         raw_result["value"] = result
         raw_result["json"] = _jsonable(result)
-        return raw_result["json"]
+        tool_result = getattr(runtime.relay, "ToolExecutionResult", None)
+        if not callable(tool_result):
+            return raw_result["json"]
+        return tool_result(raw_result["json"])
 
     try:
         managed = _run_awaitable(
@@ -85,11 +88,17 @@ def execute(
             return raw_result["value"], observed_args
         raise
 
-    if "value" in raw_result and _json_equal(managed, raw_result["json"]):
+    managed_result = _managed_tool_result(managed)
+    if "value" in raw_result and _json_equal(managed_result, raw_result["json"]):
         return raw_result["value"], observed_args
-    if isinstance(managed, str):
-        return managed, observed_args
-    return json.dumps(_jsonable(managed), ensure_ascii=False), observed_args
+    if isinstance(managed_result, str):
+        return managed_result, observed_args
+    return json.dumps(_jsonable(managed_result), ensure_ascii=False), observed_args
+
+
+def _managed_tool_result(value: Any) -> Any:
+    """Unwrap Relay's canonical tool result at the Hermes boundary."""
+    return getattr(value, "result", value)
 
 
 def _jsonable(value: Any) -> Any:

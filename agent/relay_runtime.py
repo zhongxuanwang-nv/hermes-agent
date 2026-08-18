@@ -177,9 +177,8 @@ class _ProcessRelayPluginConfiguration:
                         ) from exc
 
                 if self._activation is None:
-                    # Hermes only enters Relay's initialization path after an
-                    # explicit opt-in. Relay currently owns any subsequent ambient
-                    # layering; a future discovery=False API can make this exact.
+                    # Static initialization uses only Hermes's explicitly selected
+                    # config. Dynamic activation owns Relay-side discovery.
                     _resolve_plugin_awaitable(relay.plugin.initialize(plugin_config))
             except Exception as exc:
                 self._activation = None

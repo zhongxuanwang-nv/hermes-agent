@@ -126,7 +126,7 @@ def execute(
         _complete_logical(logical, outcome="success")
     if "value" in raw_response and _json_equal(managed, raw_response["json"]):
         return raw_response["value"]
-    return _namespace(managed)
+    return _provider_response(managed, metadata)
 
 
 async def execute_async(
@@ -219,7 +219,7 @@ async def execute_async(
         _complete_logical(logical, outcome="success")
     if "value" in raw_response and _json_equal(managed, raw_response["json"]):
         return raw_response["value"]
-    return _namespace(managed)
+    return _provider_response(managed, metadata)
 
 
 def execute_current(
@@ -1301,6 +1301,54 @@ def _namespace(value: Any) -> Any:
     if isinstance(value, list):
         return [_namespace(item) for item in value]
     return value
+
+
+def _provider_response(value: Any, metadata: dict[str, Any] | None) -> Any:
+    """Rebuild the provider response type expected by Hermes after a cache hit."""
+    payload = _jsonable(value)
+    if not isinstance(payload, dict):
+        return _namespace(payload)
+
+    api_mode = str((metadata or {}).get("api_mode") or "")
+    try:
+        if api_mode == "chat_completions":
+            from openai.types.chat import ChatCompletion
+
+            return ChatCompletion.model_validate(_openai_chat_payload(payload))
+        if api_mode == "codex_responses":
+            from openai.types.responses import Response
+
+            return Response.model_validate(payload)
+        if api_mode == "anthropic_messages":
+            from anthropic.types import Message
+
+            return Message.model_validate(payload)
+    except Exception:
+        logger.debug("Could not reconstruct cached provider response", exc_info=True)
+    return _namespace(payload)
+
+
+def _openai_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Convert Relay's normalized chat result to an OpenAI chat response."""
+    if "choices" in payload:
+        return payload
+    assistant_message = payload.get("assistant_message")
+    if not isinstance(assistant_message, dict):
+        return payload
+    return {
+        "id": str(payload.get("id") or "relay-cache-hit"),
+        "object": "chat.completion",
+        "created": int(payload.get("created") or 0),
+        "model": str(payload.get("model") or "unknown"),
+        "choices": [
+            {
+                "index": 0,
+                "message": assistant_message,
+                "finish_reason": payload.get("finish_reason") or "stop",
+            }
+        ],
+        "usage": payload.get("usage"),
+    }
 
 
 def _json_equal(left: Any, right: Any) -> bool:

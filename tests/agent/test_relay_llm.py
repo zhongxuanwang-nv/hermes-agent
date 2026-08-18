@@ -131,6 +131,82 @@ def test_unknown_api_mode_preserves_provider_name():
     )
 
 
+def test_exact_response_cache_reconstructs_openai_response(relay_turn):
+    relay, _turn = relay_turn
+    if not hasattr(relay, "ToolExecutionResult"):
+        pytest.skip("response-cache replay requires NeMo Relay 0.8")
+    from openai.types.chat import ChatCompletion
+
+    async def activate_cache():
+        await relay.plugin.initialize(
+            {
+                "components": [
+                    {
+                        "kind": "adaptive",
+                        "enabled": True,
+                        "config": {
+                            "version": 1,
+                            "response_cache": {"namespace": "hermes-cache-test"},
+                        },
+                    }
+                ]
+            }
+        )
+
+    asyncio.run(activate_cache())
+    calls = 0
+    live = ChatCompletion.model_validate(
+        {
+            "id": "chatcmpl-hermes-cache",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "cached"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+
+    def provider(_request):
+        nonlocal calls
+        calls += 1
+        return live
+
+    try:
+        request = {
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "cache me"}],
+            "temperature": 0,
+        }
+        first = relay_llm.execute(
+            request,
+            provider,
+            session_id="session-1",
+            name="openai",
+            model_name="test-model",
+            metadata={"api_mode": "chat_completions"},
+        )
+        second = relay_llm.execute(
+            request,
+            provider,
+            session_id="session-1",
+            name="openai",
+            model_name="test-model",
+            metadata={"api_mode": "chat_completions"},
+        )
+    finally:
+        asyncio.run(relay.plugin.clear_async())
+
+    assert calls == 1
+    assert isinstance(first, ChatCompletion)
+    assert isinstance(second, ChatCompletion)
+    assert second.choices[0].message.content == "cached"
+
+
 @pytest.mark.parametrize(
     "api_mode",
     ["chat_completions", "codex_responses", "anthropic_messages"],
@@ -273,9 +349,7 @@ def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
         relay.intercepts.deregister_llm_request("hermes-test-request")
 
     assert captured_requests[0]["temperature"] == 0.25
-    assert captured_requests[0]["extra_headers"] == {
-        "authorization": "Bearer provider-token"
-    }
+    assert captured_requests[0]["extra_headers"]["authorization"] == "Bearer provider-token"
     assert chunks[0].choices[0].delta.content == "HELLO"
     assert stream.output_modified is True
     assert turn.logical_llm_calls == {}

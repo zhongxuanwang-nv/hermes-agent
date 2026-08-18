@@ -901,12 +901,14 @@ class _Runtime:
                 (monotonic_ns() - tool_call.started_ns) // 1_000_000,
             ),
         )
+        result_type = getattr(self.relay, "ToolExecutionResult", None)
+        result = result_type(fields) if callable(result_type) else fields
         try:
             self._run_in_task(
                 task,
                 self.relay.tools.call_end,
                 tool_call.handle,
-                fields,
+                result,
                 metadata=self._event_metadata(),
             )
         except Exception:

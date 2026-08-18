@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 
@@ -78,7 +79,12 @@ def test_request_rewrite_reaches_authorized_callback_once(relay_turn):
 
     async def wrap_execution(_name, args, next_call):
         result = await next_call(args)
-        return relay.ToolExecutionInterceptOutcome({**result, "wrapped": True})
+        outcome = {**getattr(result, "result", result), "wrapped": True}
+        if hasattr(result, "annotation"):
+            return relay.ToolExecutionInterceptOutcome(
+                outcome, annotation=result.annotation
+            )
+        return relay.ToolExecutionInterceptOutcome(outcome)
 
     relay.intercepts.register_tool_request(
         "hermes-test-tool-request", 1, False, rewrite_request
@@ -137,6 +143,87 @@ def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypat
     assert caught.value is tool_error
 
 
+def test_tool_adapter_wraps_callback_and_unwraps_cached_result(relay_turn, monkeypatch):
+    relay = relay_turn
+    if not hasattr(relay, "ToolExecutionResult"):
+        pytest.skip("canonical tool results require NeMo Relay 0.8")
+    seen = []
+
+    async def managed_execute(_name, args, callback, **_kwargs):
+        wrapped = callback(args)
+        seen.append(wrapped)
+        return relay.ToolExecutionResult({"cached": True})
+
+    monkeypatch.setattr(relay.tools, "execute", managed_execute)
+
+    result, final_args = relay_tools.execute(
+        "read_only_lookup",
+        {"query": "cache"},
+        lambda _args: {"live": True},
+        session_id="session-1",
+    )
+
+    assert isinstance(seen[0], relay.ToolExecutionResult)
+    assert seen[0].result == {"live": True}
+    assert result == '{"cached": true}'
+    assert final_args == {"query": "cache"}
 
 
+def test_read_only_tool_cache_hit_skips_hermes_callback(relay_turn):
+    relay = relay_turn
+    if not hasattr(relay, "ToolExecutionResult"):
+        pytest.skip("tool-result caching requires NeMo Relay 0.8")
 
+    async def activate_cache():
+        await relay.plugin.initialize(
+            {
+                "components": [
+                    {
+                        "kind": "adaptive",
+                        "enabled": True,
+                        "config": {
+                            "version": 1,
+                            "response_cache": {
+                                "namespace": "hermes-tool-cache-test",
+                                "tools": {
+                                    "enabled": True,
+                                    "classes": {
+                                        "read_only": {
+                                            "cacheable": True,
+                                            "members": ["read_only_lookup"],
+                                        }
+                                    },
+                                },
+                            },
+                        },
+                    }
+                ]
+            }
+        )
+
+    asyncio.run(activate_cache())
+    calls = 0
+
+    def tool(_args):
+        nonlocal calls
+        calls += 1
+        return "live result"
+
+    try:
+        first, _ = relay_tools.execute(
+            "read_only_lookup",
+            {"query": "cache"},
+            tool,
+            session_id="session-1",
+        )
+        second, _ = relay_tools.execute(
+            "read_only_lookup",
+            {"query": "cache"},
+            tool,
+            session_id="session-1",
+        )
+    finally:
+        asyncio.run(relay.plugin.clear_async())
+
+    assert calls == 1
+    assert first == second == "live result"

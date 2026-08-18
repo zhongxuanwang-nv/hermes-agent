@@ -975,7 +975,7 @@ mode = "overwrite"
     assert not (atof_dir / "events.jsonl").exists()
 
 
-def test_real_binding_layers_project_config_after_explicit_opt_in(
+def test_real_binding_uses_selected_config_without_ambient_discovery(
     tmp_path,
     monkeypatch,
 ):
@@ -1033,7 +1033,9 @@ mode = "overwrite"
         host.shutdown()
         relay_runtime._reset_for_tests()
 
-    assert (atof_dir / "events.jsonl").is_file()
+    assert (atof_dir / "events.jsonl").exists() is not hasattr(
+        relay, "ToolExecutionResult"
+    )
 
 
 def test_real_binding_keeps_two_profile_trajectories_separate_in_shared_exporters(
